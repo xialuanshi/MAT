@@ -24,8 +24,8 @@ class Runner(object):
     """
 
     def __init__(self, config):
-        self.mat_weight = 0.5
-        self.happo_weight = 0.5
+        self.mat_weight = 1
+        self.happo_weight = 0
         self.mappo_weight = 0
         self.all_args = config['all_args']
         self.envs = config['envs']

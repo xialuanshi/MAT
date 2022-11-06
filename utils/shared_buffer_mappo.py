@@ -173,6 +173,9 @@ class SharedReplayBuffer(object):
         if self.available_actions is not None:
             self.available_actions[0] = available_actions.copy()
 
+        self.advantages = np.zeros(
+            (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
+
     def chooseafter_update(self):
         """Copy last timestep data to first index. This method is used for Hanabi."""
         self.rnn_states[0] = self.rnn_states[-1].copy()
@@ -186,57 +189,72 @@ class SharedReplayBuffer(object):
         :param next_value: (np.ndarray) value predictions for the step after the last episode step.
         :param value_normalizer: (PopArt) If not None, PopArt value normalizer instance.
         """
-        if self._use_proper_time_limits:
-            if self._use_gae:
-                self.value_preds[-1] = next_value
-                gae = 0
-                for step in reversed(range(self.rewards.shape[0])):
-                    if self._use_popart or self._use_valuenorm:
-                        # step + 1
-                        delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
-                            self.value_preds[step + 1]) * self.masks[step + 1] \
-                                - value_normalizer.denormalize(self.value_preds[step])
-                        gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1]
-                        gae = gae * self.bad_masks[step + 1]
-                        self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
-                    else:
-                        delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - \
-                                self.value_preds[step]
-                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
-                        gae = gae * self.bad_masks[step + 1]
-                        self.returns[step] = gae + self.value_preds[step]
+        for thread in self.n_rollout_threads:
+            totle_step = self.threads_done_step[thread]
+            if self._use_proper_time_limits:
+                if self._use_gae:
+                    self.value_preds[-1][thread] = next_value[thread]
+                    gae = 0
+                    for step in reversed(range(totle_step+1)):
+                        if self._use_popart or self._use_valuenorm:
+                            # step + 1
+                            delta = self.rewards[step][thread] + self.gamma * value_normalizer.denormalize(
+                                self.value_preds[step + 1][thread]) * self.masks[step + 1][thread] \
+                                    - value_normalizer.denormalize(self.value_preds[step][thread])
+                            gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1][thread]
+                            gae = gae * self.bad_masks[step + 1][thread]
+                            self.returns[step][thread] = gae + value_normalizer.denormalize(self.value_preds[step][thread])
+                        else:
+                            delta = self.rewards[step][thread] + self.gamma * self.value_preds[step + 1][thread] \
+                                    * self.masks[step + 1][thread] - self.value_preds[step][thread]
+                            gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1][thread]
+                            gae = gae * self.bad_masks[step + 1][thread]
+                            self.returns[step][thread] = gae + self.value_preds[step][thread]
+                else:
+                    self.returns[-1][thread] = next_value[thread]
+                    for step in reversed(range(totle_step+1)):
+                        if self._use_popart or self._use_valuenorm:
+                            self.returns[step][thread] = (self.returns[step + 1][thread] * self.gamma * self.masks[step + 1][thread]
+                                                          + self.rewards[step][thread]) * self.bad_masks[step + 1][thread] \
+                                                         + (1 - self.bad_masks[step + 1][thread]) \
+                                                         * value_normalizer.denormalize(self.value_preds[step][thread])
+                        else:
+                            self.returns[step][thread] = (self.returns[step + 1][thread] * self.gamma * self.masks[step + 1][thread] + self.rewards[
+                                step][thread]) * self.bad_masks[step + 1][thread] \
+                                                 + (1 - self.bad_masks[step + 1][thread]) * self.value_preds[step][thread]
             else:
-                self.returns[-1] = next_value
-                for step in reversed(range(self.rewards.shape[0])):
-                    if self._use_popart or self._use_valuenorm:
-                        self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
-                            step]) * self.bad_masks[step + 1] \
-                                             + (1 - self.bad_masks[step + 1]) * value_normalizer.denormalize(
-                            self.value_preds[step])
-                    else:
-                        self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
-                            step]) * self.bad_masks[step + 1] \
-                                             + (1 - self.bad_masks[step + 1]) * self.value_preds[step]
-        else:
-            if self._use_gae:
-                self.value_preds[-1] = next_value
-                gae = 0
-                for step in reversed(range(self.rewards.shape[0])):
-                    if self._use_popart or self._use_valuenorm:
-                        delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
-                            self.value_preds[step + 1]) * self.masks[step + 1] \
-                                - value_normalizer.denormalize(self.value_preds[step])
-                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
-                        self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
-                    else:
-                        delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - \
-                                self.value_preds[step]
-                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
-                        self.returns[step] = gae + self.value_preds[step]
-            else:
-                self.returns[-1] = next_value
-                for step in reversed(range(self.rewards.shape[0])):
-                    self.returns[step] = self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[step]
+                if self._use_gae:
+                    self.value_preds[-1][thread] = next_value[thread]
+                    gae = 0
+                    for step in reversed(range(totle_step+1)):
+                        if self._use_popart or self._use_valuenorm:
+                            delta = self.rewards[step][thread] + self.gamma * value_normalizer.denormalize(
+                                self.value_preds[step + 1][thread]) * self.masks[step + 1][thread] \
+                                    - value_normalizer.denormalize(self.value_preds[step][thread])
+                            gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1][thread] * gae
+
+                            # here is a patch for mpe, whose last step is timeout instead of terminate
+                            if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
+                                gae = 0
+
+                            self.advantages[step][thread] = gae
+                            self.returns[step][thread] = gae + value_normalizer.denormalize(self.value_preds[step][thread])
+                        else:
+                            delta = self.rewards[step][thread] + self.gamma * self.value_preds[step + 1][thread] * \
+                                    self.masks[step + 1][thread] - self.value_preds[step][thread]
+                            gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1][thread] * gae
+
+                            # here is a patch for mpe, whose last step is timeout instead of terminate
+                            if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
+                                gae = 0
+
+                            self.advantages[step][thread] = gae
+                            self.returns[step][thread] = gae + self.value_preds[step][thread]
+                else:
+                    self.returns[-1][thread] = next_value[thread]
+                    for step in reversed(range(totle_step+1)):
+                        self.returns[step][thread] = self.returns[step + 1][thread] * self.gamma \
+                                                     * self.masks[step + 1][thread] + self.rewards[step][thread]
 
     def feed_forward_generator(self, advantages, num_mini_batch=None, mini_batch_size=None):
         """
@@ -404,8 +422,19 @@ class SharedReplayBuffer(object):
         :param num_mini_batch: (int) number of minibatches to split the batch into.
         :param data_chunk_length: (int) length of sequence chunks with which to train RNN.
         """
+        # episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
+        # batch_size = n_rollout_threads * episode_length * num_agents
         episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
-        batch_size = n_rollout_threads * episode_length * num_agents
+        # batch_size = n_rollout_threads * episode_length
+        totle_step = 0
+        threads_index = [i for i in range(self.n_rollout_threads)]
+        threads_steps = [0] * self.n_rollout_threads
+        for x in threads_index:
+            value = self.threads_done_step[x]
+            totle_step += value
+            threads_steps = value
+        batch_size = totle_step
+
         data_chunks = batch_size // data_chunk_length  # [C=r*T*M/L]
         mini_batch_size = data_chunks // num_mini_batch
 

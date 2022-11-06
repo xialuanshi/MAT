@@ -187,6 +187,10 @@ class SharedReplayBuffer(object):
         if self.available_actions is not None:
             self.available_actions[0] = available_actions.copy()
 
+        # advantage 重置全为0，保证求均值时，使用的是当前的最新的episode的数据
+        self.advantages = np.zeros(
+            (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
+
     def chooseafter_update(self):
         """Copy last timestep data to first index. This method is used for Hanabi."""
         self.rnn_states[0] = self.rnn_states[-1].copy()
