@@ -268,12 +268,12 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
         cmd, data = remote.recv()
         if cmd == 'step':
             ob, s_ob, reward, done, info, available_actions = env.step(data)
-            if 'bool' in done.__class__.__name__:
-                if done:
-                    ob, s_ob, available_actions = env.reset()
-            else:
-                if np.all(done):
-                    ob, s_ob, available_actions = env.reset()
+            # if 'bool' in done.__class__.__name__:
+            #     if done:
+            #         ob, s_ob, available_actions = env.reset()
+            # else:
+            #     if np.all(done):
+            #         ob, s_ob, available_actions = env.reset()
 
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == 'reset':
@@ -312,6 +312,10 @@ class ShareSubprocVecEnv(ShareVecEnv):
         self.waiting = False
         self.closed = False
         nenvs = len(env_fns)
+
+        self.waiting_reset = dict()
+        self.env_nums = nenvs
+
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
         self.ps = [Process(target=shareworker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
                    for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
@@ -334,12 +338,27 @@ class ShareSubprocVecEnv(ShareVecEnv):
         self.waiting = True
 
     def step_wait(self):
-        results = [remote.recv() for remote in self.remotes]
+        results = []
+        wait = list(self.waiting_reset.keys())
+        for i in range(self.env_nums):
+            if i not in wait:
+                results.append(self.remotes[i].recv())
+            else:
+                results.append(self.waiting_reset[i])
+
+        # results = [remote.recv() for remote in self.remotes]
+
         self.waiting = False
-        obs, share_obs, rews, dones, infos, available_actions = zip(*results)
-        return np.stack(obs), np.stack(share_obs), np.stack(rews), np.stack(dones), infos, np.stack(available_actions)
+        obs, rews, dones, infos = zip(*results)
+
+        for i in range(self.env_nums):
+            if np.all(dones[i]):
+                self.waiting_reset[i] = results[i]
+
+        return np.stack(obs), np.stack(rews), np.stack(dones), infos, list(self.waiting_reset.keys())
 
     def reset(self):
+        self.waiting_reset = {}
         for remote in self.remotes:
             remote.send(('reset', None))
         results = [remote.recv() for remote in self.remotes]

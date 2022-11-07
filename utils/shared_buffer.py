@@ -125,7 +125,7 @@ class SharedReplayBuffer(object):
             self.available_actions[self.step + 1] = available_actions.copy()
 
         self.step = (self.step + 1) % self.episode_length
-        self.threads_done_step = {}
+
 
     def chooseinsert(self, share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs,
                      value_preds, rewards, masks, bad_masks=None, active_masks=None, available_actions=None):
@@ -191,6 +191,8 @@ class SharedReplayBuffer(object):
         self.advantages = np.zeros(
             (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
 
+        self.threads_done_step = {}
+
     def chooseafter_update(self):
         """Copy last timestep data to first index. This method is used for Hanabi."""
         self.rnn_states[0] = self.rnn_states[-1].copy()
@@ -204,7 +206,7 @@ class SharedReplayBuffer(object):
         :param next_value: (np.ndarray) value predictions for the step after the last episode step.
         :param value_normalizer: (PopArt) If not None, PopArt value normalizer instance.
         """
-        for thread in self.n_rollout_threads:
+        for thread in range(self.n_rollout_threads):
             totle_step = self.threads_done_step[thread]
             if self._use_proper_time_limits:
                 if self._use_gae:
@@ -286,7 +288,7 @@ class SharedReplayBuffer(object):
         for x in threads_index:
             value = self.threads_done_step[x]
             totle_step += value
-            threads_steps = value
+            threads_steps[i] = value
         batch_size = totle_step
 
         if mini_batch_size is None:
@@ -307,38 +309,37 @@ class SharedReplayBuffer(object):
         # keep (num_agent, dim)
         for x in threads_index:
             if x == 0:
-                share_obs = self.share_obs[:threads_steps[x]][x].reshape(-1, *self.share_obs.shape[2:])
-                obs = self.obs[:threads_steps[x]][x].reshape(-1, *self.obs.shape[2:])
-                rnn_states = self.rnn_states[:threads_steps[x]][x].reshape(-1, *self.rnn_states.shape[2:])
-                rnn_states_critic = self.rnn_states_critic[:threads_steps[x]][x].reshape(-1, *self.rnn_states_critic.shape[2:])
-                actions = self.actions[:threads_steps[x]][x].reshape(-1, *self.actions.shape[2:])
+                share_obs = self.share_obs[:threads_steps[x], x, :, :].reshape(-1, *self.share_obs.shape[2:])
+                obs = self.obs[:threads_steps[x], x, :, :].reshape(-1, *self.obs.shape[2:])
+                rnn_states = self.rnn_states[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states.shape[2:])
+                rnn_states_critic = self.rnn_states_critic[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states_critic.shape[2:])
+                actions = self.actions[:threads_steps[x], x, :, :].reshape(-1, *self.actions.shape[2:])
                 if self.available_actions is not None:
-                    available_actions = self.available_actions[:threads_steps[x]][x].reshape(-1, *self.available_actions.shape[2:])
-                value_preds = self.value_preds[:threads_steps[x]][x].reshape(-1, *self.value_preds.shape[2:])
-                returns = self.returns[:threads_steps[x]][x].reshape(-1, *self.returns.shape[2:])
-                masks = self.masks[:threads_steps[x]][x].reshape(-1, *self.masks.shape[2:])
-                active_masks = self.active_masks[:threads_steps[x]][x].reshape(-1, *self.active_masks.shape[2:])
-                action_log_probs = self.action_log_probs[:threads_steps[x]][x].reshape(-1, *self.action_log_probs.shape[2:])
-                new_advantages = advantages[:threads_steps[x]][x].reshape(-1, *advantages.shape[2:])
+                    available_actions = self.available_actions[:threads_steps[x], x, :, :].reshape(-1, *self.available_actions.shape[2:])
+                value_preds = self.value_preds[:threads_steps[x], x, :, :].reshape(-1, *self.value_preds.shape[2:])
+                returns = self.returns[:threads_steps[x], x, :, :].reshape(-1, *self.returns.shape[2:])
+                masks = self.masks[:threads_steps[x], x, :, :].reshape(-1, *self.masks.shape[2:])
+                active_masks = self.active_masks[:threads_steps[x], x, :, :].reshape(-1, *self.active_masks.shape[2:])
+                action_log_probs = self.action_log_probs[:threads_steps[x], x, :, :].reshape(-1, *self.action_log_probs.shape[2:])
+                new_advantages = advantages[:threads_steps[x], x, :, :].reshape(-1, *advantages.shape[2:])
             else:
-                share_obs = np.concatenate(share_obs, self.share_obs[:threads_steps[x]][x].reshape(-1, *self.share_obs.shape[2:]))
-                obs = np.concatenate(obs,self.obs[:threads_steps[x]][x].reshape(-1, *self.obs.shape[2:]))
-                rnn_states =np.concatenate(rnn_states, self.rnn_states[:threads_steps[x]][x].reshape(-1, *self.rnn_states.shape[2:]))
-                rnn_states_critic = np.concatenate(rnn_states_critic,self.rnn_states_critic[:threads_steps[x]][x].reshape(-1,
-                                                                                      *self.rnn_states_critic.shape[2:]))
-                actions = np.concatenate(actions,self.actions[:threads_steps[x]][x].reshape(-1, *self.actions.shape[2:]))
+                share_obs = np.concatenate((share_obs, self.share_obs[:threads_steps[x], x, :, :].reshape(-1, *self.share_obs.shape[2:])))
+                obs = np.concatenate((obs,self.obs[:threads_steps[x], x, :, :].reshape(-1, *self.obs.shape[2:])))
+                rnn_states =np.concatenate((rnn_states, self.rnn_states[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states.shape[2:])))
+                rnn_states_critic = np.concatenate((rnn_states_critic,self.rnn_states_critic[:threads_steps[x], x, :, :].reshape(-1,
+                                                                                      *self.rnn_states_critic.shape[2:])))
+                actions = np.concatenate((actions,self.actions[:threads_steps[x], x, :, :].reshape(-1, *self.actions.shape[2:])))
                 if self.available_actions is not None:
-                    available_actions = np.concatenate(available_actions,self.available_actions[:threads_steps[x]][x].reshape(-1,
-                                                                                          *self.available_actions.shape[
-                                                                                           2:]))
-                value_preds = np.concatenate(value_preds,self.value_preds[:threads_steps[x]][x].reshape(-1, *self.value_preds.shape[2:]))
-                returns = np.concatenate(returns,self.returns[:threads_steps[x]][x].reshape(-1, *self.returns.shape[2:]))
-                masks = np.concatenate(masks,self.masks[:threads_steps[x]][x].reshape(-1, *self.masks.shape[2:]))
-                active_masks = np.concatenate(active_masks,self.active_masks[:threads_steps[x]][x].reshape(-1,
-                                                                                                     *self.active_masks.shape[2:]))
-                action_log_probs = np.concatenate(action_log_probs,self.action_log_probs[:threads_steps[x]][x].reshape(-1,
-                                                                                    *self.action_log_probs.shape[2:]))
-                new_advantages = np.concatenate(new_advantages,advantages[:threads_steps[x]][x].reshape(-1, *advantages.shape[2:]))
+                    available_actions = np.concatenate((available_actions,self.available_actions[:threads_steps[x], x, :, :].reshape(-1,
+                                                                                          *self.available_actions.shape[ 2:])))
+                value_preds = np.concatenate((value_preds,self.value_preds[:threads_steps[x], x, :, :].reshape(-1, *self.value_preds.shape[2:])))
+                returns = np.concatenate((returns,self.returns[:threads_steps[x], x, :, :].reshape(-1, *self.returns.shape[2:])))
+                masks = np.concatenate((masks,self.masks[:threads_steps[x], x, :, :].reshape(-1, *self.masks.shape[2:])))
+                active_masks = np.concatenate((active_masks,self.active_masks[:threads_steps[x], x, :, :].reshape(-1,
+                                                                                                     *self.active_masks.shape[2:])))
+                action_log_probs = np.concatenate((action_log_probs,self.action_log_probs[:threads_steps[x], x, :, :].reshape(-1,
+                                                                                    *self.action_log_probs.shape[2:])))
+                new_advantages = np.concatenate((new_advantages,advantages[:threads_steps[x], x, :, :].reshape(-1, *advantages.shape[2:])))
 
         share_obs = share_obs[rows, cols]
         obs = obs[rows, cols]
