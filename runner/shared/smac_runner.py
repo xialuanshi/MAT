@@ -24,44 +24,32 @@ class SMACRunner(Runner):
     def sample_mat_happo_actions(self, m_action_logits, h_action_logits, deterministic=False):
         actions, m_action_log_probs, h_action_log_probs = [], [], []
         for m_distri, h_distri in zip(m_action_logits, h_action_logits):
-            two_logist = self.mat_weight * m_distri.logits + self.happo_weight * h_distri.logits
-            distri = Categorical(logits=two_logist)
+            two_probs= self.mat_weight * m_distri.probs + self.happo_weight * h_distri.probs
+            distri = Categorical(logits=two_probs)
             action = distri.probs.argmax(dim=-1) if deterministic else distri.sample()
             actions.append(_t2n(action))
             m_action_log_probs.append(_t2n(m_distri.log_prob(action)))
             h_action_log_probs.append(_t2n(h_distri.log_prob(action)))
-        actions = np.array(np.split(np.array(actions), self.n_rollout_threads))
-        print("action is iiiiiiiii ",actions)
-        """
-        two:
-        action is iiiiiiiii  [[[3 2]
-              [5 1]
-              [2 4]]
-            
-             [[4 4]
-              [2 3]
-              [2 3]]]
-
-        """
-
-        m_action_log_probs = np.array(np.split(np.array(m_action_log_probs), self.n_rollout_threads))
-        h_action_log_probs = np.array(np.split(np.array(h_action_log_probs), self.n_rollout_threads))
+        actions = np.array(np.split(np.array(actions), self.n_rollout_threads, axis=1))
+        m_action_log_probs = np.array(np.split(np.array(m_action_log_probs), self.n_rollout_threads, axis=1))
+        h_action_log_probs = np.array(np.split(np.array(h_action_log_probs), self.n_rollout_threads, axis=1))
         return actions, m_action_log_probs, h_action_log_probs
 
     def sample_mat_mappo_actions(self, m_action_logits, map_action_logits, deterministic=False):
         actions, m_action_log_probs, map_action_log_probs = [], [], []
         for i in range(len(m_action_logits)):
             m_distri = m_action_logits[i]
-            two_logist = m_distri.logits * self.mat_weight + self.mappo_weight * map_action_logits.logits[i]
-            distri = Categorical(logits=two_logist)
+            two_probs = m_distri.probs * self.mat_weight + self.mappo_weight * map_action_logits.probs[i]
+            distri = Categorical(probs=two_probs)
             action = distri.probs.argmax(dim=-1) if deterministic else distri.sample()
             actions.append(_t2n(action))
             m_action_log_probs.append(_t2n(m_distri.log_prob(action)))
-        map_action_log_probs = _t2n(map_action_logits.log_prob(actions))
-        map_action_log_probs = np.array(map_action_log_probs).reshape(len(map_action_log_probs), 1)
-        actions = np.array(np.split(np.array(actions), self.n_rollout_threads))
-        m_action_log_probs = np.array(np.split(np.array(m_action_log_probs), self.n_rollout_threads))
-        map_action_log_probs = np.array(np.split(np.array(map_action_log_probs), self.n_rollout_threads))
+        cat_action = torch.tensor(actions).reshape(self.n_rollout_threads * self.num_agents, 1).to(self.device)
+        map_action_log_probs = _t2n(map_action_logits.log_prob(cat_action))
+        map_action_log_probs = np.array(map_action_log_probs).reshape(self.num_agents, self.n_rollout_threads)
+        actions = np.array(np.split(np.array(actions), self.n_rollout_threads,  axis=1))
+        m_action_log_probs = np.array(np.split(np.array(m_action_log_probs), self.n_rollout_threads, axis=1))
+        map_action_log_probs = np.array(np.split(np.array(map_action_log_probs), self.n_rollout_threads, axis=1))
         return actions, m_action_log_probs, map_action_log_probs
 
     def sample_three_actions(self, m_action_logits, h_action_logits, map_action_logits, deterministic=False):
@@ -71,7 +59,7 @@ class SMACRunner(Runner):
             m_distri = m_action_logits[i]
             h_distri = h_action_logits[i]
             three_probs = m_distri.probs * self.mat_weight + h_distri.probs * self.happo_weight + \
-                           self.mappo_weight * map_action_logits.probs[i*4:(i+1)*4]
+                          self.mappo_weight * map_action_logits.probs[i * 4:(i + 1) * 4]
             distri = Categorical(probs=three_probs)
             action = distri.probs.argmax(dim=-1) if deterministic else distri.sample()
             actions.append(_t2n(action))
@@ -91,7 +79,7 @@ class SMACRunner(Runner):
         [ 2],
         [11],
         [ 8]])
-        
+
         2 n_rollout_threads env
         actions>>>>>>>>>>>>>>>>>>>>>>>>>>> tensor([[ 4],
         [ 4],
@@ -115,27 +103,20 @@ class SMACRunner(Runner):
         return actions, m_action_log_probs, h_action_log_probs, map_action_log_probs
 
     def run(self):
+        self.warmup()
+
         start = time.time()
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
 
         last_battles_game = np.zeros(self.n_rollout_threads, dtype=np.float32)
         last_battles_won = np.zeros(self.n_rollout_threads, dtype=np.float32)
 
-        agent_nums = 5
-        max_steps = self.episode_length + 100
         for episode in range(episodes):
-            self.warmup()
-            per_thread_agent = {i: max_steps for i in range(agent_nums)}
-            threads_done_step = {}
-            step_done_agent ={i:per_thread_agent for i in range(self.n_rollout_threads)}
-            thread_final_reward = { i:0 for i in range(self.n_rollout_threads)}
             if self.use_linear_lr_decay:
                 self.mat_trainer.policy.lr_decay(episode, episodes)
 
                 for agent_id in range(self.num_agents):
                     self.happo_trainer[agent_id].policy.lr_decay(episode, episodes)
-
-                self.mappo_trainer.policy.lr_decay(episode, episodes)
 
             for step in range(self.episode_length):
                 # Sample actions
@@ -163,39 +144,21 @@ class SMACRunner(Runner):
                     actions = m_actions
 
                 # Obser reward and next obs
-                obs, share_obs, rewards, dones, infos, available_actions, is_thread_dones = self.envs.step(actions)
-
-                # 记录每个进程结束的步长
-                if is_thread_dones:
-                    for x in is_thread_dones:
-                        if x not in threads_done_step:
-                            threads_done_step[x] = step
-                            # 正的最大值，付的最小值, 也可以环境返回
-                            thread_final_reward[x] = max(rewards[x]) if max(rewards[x]) >= 20 else min(rewards[x])
-                for done_thread in range(self.n_rollout_threads):
-                    for done_agent in range(agent_nums):
-                        if dones[done_thread][done_agent]:
-                            if step_done_agent[done_thread][done_agent] >= self.episode_length:
-                                step_done_agent[done_thread][done_agent] = step
+                obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
 
                 m_data = obs, share_obs, rewards, dones, infos, available_actions, \
                          m_values, actions, m_action_log_probs, m_rnn_states, m_rnn_states_critic
-                self.mat_insert(m_data, threads_done_step, step_done_agent, thread_final_reward)
+                self.mat_insert(m_data)
 
                 if self.happo_weight != 0:
                     h_data = obs, share_obs, rewards, dones, infos, available_actions, \
                              h_values, actions, h_action_log_probs, h_rnn_states, h_rnn_states_critic
-                    self.happo_insert(h_data, threads_done_step)
+                    self.happo_insert(h_data)
 
                 if self.mappo_weight != 0:
                     map_date = obs, share_obs, rewards, dones, infos, available_actions, \
-                               map_values, actions, map_action_log_probs, map_rnn_states, map_rnn_states_critic
-                    self.mappo_insert(map_date, threads_done_step)
-
-                # 所有环境都结束，跳出循环
-                if len(is_thread_dones) == self.n_rollout_threads:
-                    break
-
+                               map_values, map_actions, map_action_log_probs, map_rnn_states, map_rnn_states_critic
+                    self.mappo_insert(map_date)
 
             # compute return and update network
             self.compute()
@@ -271,11 +234,9 @@ class SMACRunner(Runner):
         if not self.use_centralized_V:
             share_obs = obs
 
-        self.mat_buffer.reset(obs, share_obs, available_actions)  # 每一局进行重置
-
-        # self.mat_buffer.share_obs[0] = share_obs.copy()
-        # self.mat_buffer.obs[0] = obs.copy()
-        # self.mat_buffer.available_actions[0] = available_actions.copy()
+        self.mat_buffer.share_obs[0] = share_obs.copy()
+        self.mat_buffer.obs[0] = obs.copy()
+        self.mat_buffer.available_actions[0] = available_actions.copy()
 
         # happo
         if self.happo_weight != 0:
@@ -286,10 +247,9 @@ class SMACRunner(Runner):
 
         # mappo
         if self.mappo_weight != 0:
-            self.mappo_buffer.reset(obs, share_obs, available_actions)
-            # self.mappo_buffer.share_obs[0] = share_obs.copy()
-            # self.mappo_buffer.obs[0] = obs.copy()
-            # self.mappo_buffer.available_actions[0] = available_actions.copy()
+            self.mappo_buffer.share_obs[0] = share_obs.copy()
+            self.mappo_buffer.obs[0] = obs.copy()
+            self.mappo_buffer.available_actions[0] = available_actions.copy()
 
     @torch.no_grad()
     def collect(self, step):
@@ -361,7 +321,7 @@ class SMACRunner(Runner):
 
         return values, actions, action_log_probs, rnn_states, rnn_states_critic, action_logits
 
-    def mat_insert(self, data, threads_done_step, step_done_agent, thread_final_reward):
+    def mat_insert(self, data):
         obs, share_obs, rewards, dones, infos, available_actions, \
         values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
@@ -387,15 +347,11 @@ class SMACRunner(Runner):
         if not self.use_centralized_V:
             share_obs = obs
 
-        self.mat_buffer.threads_done_step = threads_done_step
-        self.step_done_agent = step_done_agent
-        self.thread_final_reward = thread_final_reward
-
         self.mat_buffer.insert(share_obs, obs, rnn_states, rnn_states_critic,
                                actions, action_log_probs, values, rewards, masks, bad_masks, active_masks,
                                available_actions)
 
-    def happo_insert(self, data, threads_done_step):
+    def happo_insert(self, data):
         obs, share_obs, rewards, dones, infos, available_actions, \
         values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
@@ -421,7 +377,6 @@ class SMACRunner(Runner):
         if not self.use_centralized_V:
             share_obs = obs
         for agent_id in range(self.num_agents):
-            self.happo_buffer[agent_id].threads_done_step = threads_done_step
             self.happo_buffer[agent_id].insert(share_obs[:, agent_id], obs[:, agent_id], rnn_states[:, agent_id],
                                                rnn_states_critic[:, agent_id], actions[:, agent_id],
                                                action_log_probs[:, agent_id],
@@ -429,7 +384,7 @@ class SMACRunner(Runner):
                                                bad_masks[:, agent_id],
                                                active_masks[:, agent_id], available_actions[:, agent_id])
 
-    def mappo_insert(self, data, threads_done_step):
+    def mappo_insert(self, data):
         obs, share_obs, rewards, dones, infos, available_actions, \
         values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
@@ -454,7 +409,7 @@ class SMACRunner(Runner):
 
         if not self.use_centralized_V:
             share_obs = obs
-        self.mappo_buffer.threads_done_step = threads_done_step
+
         self.mappo_buffer.insert(share_obs, obs, rnn_states, rnn_states_critic,
                                  actions, action_log_probs, values, rewards, masks, bad_masks, active_masks,
                                  available_actions)

@@ -7,7 +7,6 @@ from multiprocessing import Process, Pipe
 from abc import ABC, abstractmethod
 from mat.utils.util import tile_images
 
-
 class CloudpickleWrapper(object):
     """
     Uses cloudpickle to serialize contents (otherwise multiprocessing tries to use pickle)
@@ -174,7 +173,8 @@ def worker(remote, parent_remote, env_fn_wrapper):
         else:
             raise NotImplementedError
 
-class SubprocVecEnv(ShareVecEnv):
+
+class GuardSubprocVecEnv(ShareVecEnv):
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -182,15 +182,11 @@ class SubprocVecEnv(ShareVecEnv):
         self.waiting = False
         self.closed = False
         nenvs = len(env_fns)
-
-        self.waiting_reset = dict()
-        self.env_nums = nenvs
-
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
         self.ps = [Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
                    for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
         for p in self.ps:
-            p.daemon = True  # if the main process crashes, we should not cause things to hang
+            p.daemon = False  # could cause zombie process
             p.start()
         for remote in self.work_remotes:
             remote.close()
@@ -201,36 +197,18 @@ class SubprocVecEnv(ShareVecEnv):
                              share_observation_space, action_space)
 
     def step_async(self, actions):
-        # for remote, action in zip(self.remotes, actions):
-        #     remote.send(('step', action))
-        wait = list(self.waiting_reset.keys())
-        for i in range(self.env_nums):
-            if i not in wait:
-                self.remotes[i].send(('step', actions[i]))
+
+        for remote, action in zip(self.remotes, actions):
+            remote.send(('step', action))
         self.waiting = True
 
     def step_wait(self):
-        results = []
-        wait = list(self.waiting_reset.keys())
-        for i in range(self.env_nums):
-            if i not in wait:
-                results.append(self.remotes[i].recv())
-            else:
-                results.append(self.waiting_reset[i])
-
-        #results = [remote.recv() for remote in self.remotes]
-
+        results = [remote.recv() for remote in self.remotes]
         self.waiting = False
         obs, rews, dones, infos = zip(*results)
-
-        for i in range(self.env_nums):
-            if np.all(dones[i]):
-                self.waiting_reset[i] = results[i]
-
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos, list(self.waiting_reset.keys())
+        return np.stack(obs), np.stack(rews), np.stack(dones), infos
 
     def reset(self):
-        self.waiting_reset = {}
         for remote in self.remotes:
             remote.send(('reset', None))
         obs = [remote.recv() for remote in self.remotes]
@@ -253,12 +231,70 @@ class SubprocVecEnv(ShareVecEnv):
             p.join()
         self.closed = True
 
+
+class SubprocVecEnv(ShareVecEnv):
+    def __init__(self, env_fns, spaces=None):
+        """
+        envs: list of gym environments to run in subprocesses
+        """
+        self.waiting = False
+        self.closed = False
+        nenvs = len(env_fns)
+        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
+        self.ps = [Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+                   for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
+        for p in self.ps:
+            p.daemon = True  # if the main process crashes, we should not cause things to hang
+            p.start()
+        for remote in self.work_remotes:
+            remote.close()
+
+        self.remotes[0].send(('get_spaces', None))
+        observation_space, share_observation_space, action_space = self.remotes[0].recv()
+        ShareVecEnv.__init__(self, len(env_fns), observation_space,
+                             share_observation_space, action_space)
+
+    def step_async(self, actions):
+        for remote, action in zip(self.remotes, actions):
+            remote.send(('step', action))
+        self.waiting = True
+
+    def step_wait(self):
+        results = [remote.recv() for remote in self.remotes]
+        self.waiting = False
+        obs, rews, dones, infos = zip(*results)
+        return np.stack(obs), np.stack(rews), np.stack(dones), infos
+
+    def reset(self):
+        for remote in self.remotes:
+            remote.send(('reset', None))
+        obs = [remote.recv() for remote in self.remotes]
+        return np.stack(obs)
+
+
+    def reset_task(self):
+        for remote in self.remotes:
+            remote.send(('reset_task', None))
+        return np.stack([remote.recv() for remote in self.remotes])
+
+    def close(self):
+        if self.closed:
+            return
+        if self.waiting:
+            for remote in self.remotes:
+                remote.recv()
+        for remote in self.remotes:
+            remote.send(('close', None))
+        for p in self.ps:
+            p.join()
+        self.closed = True
+
     def render(self, mode="rgb_array"):
         for remote in self.remotes:
             remote.send(('render', mode))
-        if mode == "rgb_array":
+        if mode == "rgb_array":   
             frame = [remote.recv() for remote in self.remotes]
-            return np.stack(frame)
+            return np.stack(frame) 
 
 
 def shareworker(remote, parent_remote, env_fn_wrapper):
@@ -268,12 +304,12 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
         cmd, data = remote.recv()
         if cmd == 'step':
             ob, s_ob, reward, done, info, available_actions = env.step(data)
-            # if 'bool' in done.__class__.__name__:
-            #     if done:
-            #         ob, s_ob, available_actions = env.reset()
-            # else:
-            #     if np.all(done):
-            #         ob, s_ob, available_actions = env.reset()
+            if 'bool' in done.__class__.__name__:
+                if done:
+                    ob, s_ob, available_actions = env.reset()
+            else:
+                if np.all(done):
+                    ob, s_ob, available_actions = env.reset()
 
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == 'reset':
@@ -312,10 +348,6 @@ class ShareSubprocVecEnv(ShareVecEnv):
         self.waiting = False
         self.closed = False
         nenvs = len(env_fns)
-
-        self.waiting_reset = dict()
-        self.env_nums = nenvs
-
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
         self.ps = [Process(target=shareworker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
                    for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
@@ -338,27 +370,12 @@ class ShareSubprocVecEnv(ShareVecEnv):
         self.waiting = True
 
     def step_wait(self):
-        results = []
-        wait = list(self.waiting_reset.keys())
-        for i in range(self.env_nums):
-            if i not in wait:
-                results.append(self.remotes[i].recv())
-            else:
-                results.append(self.waiting_reset[i])
-
-        # results = [remote.recv() for remote in self.remotes]
-
+        results = [remote.recv() for remote in self.remotes]
         self.waiting = False
-        obs, rews, dones, infos = zip(*results)
-
-        for i in range(self.env_nums):
-            if np.all(dones[i]):
-                self.waiting_reset[i] = results[i]
-
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos, list(self.waiting_reset.keys())
+        obs, share_obs, rews, dones, infos, available_actions = zip(*results)
+        return np.stack(obs), np.stack(share_obs), np.stack(rews), np.stack(dones), infos, np.stack(available_actions)
 
     def reset(self):
-        self.waiting_reset = {}
         for remote in self.remotes:
             remote.send(('reset', None))
         results = [remote.recv() for remote in self.remotes]
@@ -455,7 +472,7 @@ class ChooseSimpleSubprocVecEnv(ShareVecEnv):
     def render(self, mode="rgb_array"):
         for remote in self.remotes:
             remote.send(('render', mode))
-        if mode == "rgb_array":
+        if mode == "rgb_array":   
             frame = [remote.recv() for remote in self.remotes]
             return np.stack(frame)
 
@@ -689,6 +706,7 @@ class DummyVecEnv(ShareVecEnv):
             raise NotImplementedError
 
 
+
 class ShareDummyVecEnv(ShareVecEnv):
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
@@ -729,7 +747,7 @@ class ShareDummyVecEnv(ShareVecEnv):
     def save_replay(self):
         for env in self.envs:
             env.save_replay()
-
+    
     def render(self, mode="human"):
         if mode == "rgb_array":
             return np.array([env.render(mode=mode) for env in self.envs])
@@ -777,7 +795,6 @@ class ChooseDummyVecEnv(ShareVecEnv):
         else:
             raise NotImplementedError
 
-
 class ChooseSimpleDummyVecEnv(ShareVecEnv):
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
@@ -797,7 +814,7 @@ class ChooseSimpleDummyVecEnv(ShareVecEnv):
 
     def reset(self, reset_choose):
         obs = [env.reset(choose)
-               for (env, choose) in zip(self.envs, reset_choose)]
+                   for (env, choose) in zip(self.envs, reset_choose)]
         return np.array(obs)
 
     def close(self):

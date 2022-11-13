@@ -169,7 +169,7 @@ def get_config():
                         default=1, help="Number of torch threads for training")
     parser.add_argument("--n_rollout_threads", type=int, default=1,
                         help="Number of parallel envs for training rollouts")
-    parser.add_argument("--n_eval_rollout_threads", type=int, default=2,
+    parser.add_argument("--n_eval_rollout_threads", type=int, default=1,
                         help="Number of parallel envs for evaluating rollouts")
     parser.add_argument("--n_render_rollout_threads", type=int, default=1,
                         help="Number of parallel envs for rendering rollouts")
@@ -185,7 +185,7 @@ def get_config():
 
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int,
-                        default=1200, help="Max length for any episode")
+                        default=200, help="Max length for any episode")
 
     # network parameters
     parser.add_argument("--share_policy", action='store_false',
@@ -222,7 +222,7 @@ def get_config():
     parser.add_argument("--use_recurrent_policy_mappo", action='store_false',
                         default=True, help='use a recurrent policy')
     parser.add_argument("--recurrent_N", type=int, default=1, help="The number of recurrent layers.")
-    parser.add_argument("--data_chunk_length", type=int, default=20,
+    parser.add_argument("--data_chunk_length", type=int, default=10,
                         help="Time length of chunks used to train a recurrent_policy")
 
     # optimizer parameters

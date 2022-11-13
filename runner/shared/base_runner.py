@@ -24,9 +24,9 @@ class Runner(object):
     """
 
     def __init__(self, config):
-        self.mat_weight = 1
-        self.happo_weight = 0
-        self.mappo_weight = 0
+        self.mat_weight = 0.5
+        self.happo_weight = 0.3
+        self.mappo_weight = 0.2
         self.all_args = config['all_args']
         self.envs = config['envs']
         self.eval_envs = config['eval_envs']
@@ -182,7 +182,6 @@ class Runner(object):
     def compute(self):
         """Calculate returns for the collected data."""
         self.mat_trainer.prep_rollout()
-        # 由于单个进程结束后，会继续插入最后时刻的obs,因此从该进程环境结束后，后面的数据是一样的
         next_values = self.mat_trainer.policy.get_values(np.concatenate(self.mat_buffer.share_obs[-1]),
                                                          np.concatenate(self.mat_buffer.obs[-1]),
                                                          np.concatenate(self.mat_buffer.rnn_states_critic[-1]),
@@ -214,7 +213,7 @@ class Runner(object):
         """Train policies with data in buffer. """
         self.mat_trainer.prep_training()
         mat_train_infos = self.mat_trainer.train(self.mat_buffer)
-        #self.mat_buffer.after_update()
+        self.mat_buffer.after_update()
 
         # HAPPO
         happo_train_infos = []
@@ -259,14 +258,14 @@ class Runner(object):
                                                                                                      self.n_rollout_threads,
                                                                                                      1))
                 happo_train_infos.append(train_info)
-                #self.happo_buffer[agent_id].after_update()
+                self.happo_buffer[agent_id].after_update()
 
         # MAPPO
         mappo_train_infos = []
         if self.mappo_weight != 0:
             self.mappo_trainer.prep_training()
             mappo_train_infos = self.mappo_trainer.train(self.mappo_buffer)
-            #self.mappo_buffer.after_update()
+            self.mappo_buffer.after_update()
 
         return mat_train_infos, happo_train_infos, mappo_train_infos
 

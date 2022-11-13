@@ -21,7 +21,6 @@ class SeparatedReplayBuffer(object):
         self._use_popart = args.use_popart_happo
         self._use_valuenorm = args.use_valuenorm
         self._use_proper_time_limits = args.use_proper_time_limits
-        self.threads_done_step = {}
 
 
 

@@ -44,7 +44,6 @@ class SharedReplayBuffer(object):
         self.algo = args.algorithm_name
         self.num_agents = num_agents
         self.env_name = env_name
-        self.threads_done_step = {}
 
         obs_shape = get_shape_from_obs_space(obs_space)
         share_obs_shape = get_shape_from_obs_space(cent_obs_space)
@@ -126,7 +125,6 @@ class SharedReplayBuffer(object):
 
         self.step = (self.step + 1) % self.episode_length
 
-
     def chooseinsert(self, share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs,
                      value_preds, rewards, masks, bad_masks=None, active_masks=None, available_actions=None):
         """
@@ -162,9 +160,6 @@ class SharedReplayBuffer(object):
 
         self.step = (self.step + 1) % self.episode_length
 
-        self.step_done_agent = {}
-        self.thread_final_reward = {}
-
     def after_update(self):
         """Copy last timestep data to first index. Called after update to model."""
         self.share_obs[0] = self.share_obs[-1].copy()
@@ -176,27 +171,6 @@ class SharedReplayBuffer(object):
         self.active_masks[0] = self.active_masks[-1].copy()
         if self.available_actions is not None:
             self.available_actions[0] = self.available_actions[-1].copy()
-
-    def reset(self, obs, share_obs, available_actions):
-        self.share_obs[0] = share_obs.copy()
-        self.obs[0] = obs.copy()
-        self.rnn_states[0] = np.zeros((self.n_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size),
-                                      dtype=np.float32)
-        self.rnn_states_critic[0] = np.zeros((self.n_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size),
-                                             dtype=np.float32)
-        self.masks[0] = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        self.bad_masks[0] = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        self.active_masks[0] = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        if self.available_actions is not None:
-            self.available_actions[0] = available_actions.copy()
-
-        # advantage 重置全为0，保证求均值时，使用的是当前的最新的episode的数据
-        self.advantages = np.zeros(
-            (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
-
-        self.threads_done_step = {}
-        self.step_done_agent = {}
-        self.thread_final_reward = {}
 
     def chooseafter_update(self):
         """Copy last timestep data to first index. This method is used for Hanabi."""
@@ -211,81 +185,69 @@ class SharedReplayBuffer(object):
         :param next_value: (np.ndarray) value predictions for the step after the last episode step.
         :param value_normalizer: (PopArt) If not None, PopArt value normalizer instance.
         """
-        for thread in range(self.n_rollout_threads):
-            totle_step = self.threads_done_step[thread]
-            if self._use_proper_time_limits:
-                if self._use_gae:
-                    self.value_preds[-1][thread] = next_value[thread]
-                    gae = 0
-                    for step in reversed(range(totle_step+1)):
-                        if self._use_popart or self._use_valuenorm:
-                            # step + 1
-                            delta = self.rewards[step][thread] + self.gamma * value_normalizer.denormalize(
-                                self.value_preds[step + 1][thread]) * self.masks[step + 1][thread] \
-                                    - value_normalizer.denormalize(self.value_preds[step][thread])
-                            gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1][thread]
-                            gae = gae * self.bad_masks[step + 1][thread]
-                            self.returns[step][thread] = gae + value_normalizer.denormalize(self.value_preds[step][thread])
-                        else:
-                            delta = self.rewards[step][thread] + self.gamma * self.value_preds[step + 1][thread] \
-                                    * self.masks[step + 1][thread] - self.value_preds[step][thread]
-                            gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1][thread]
-                            gae = gae * self.bad_masks[step + 1][thread]
-                            self.returns[step][thread] = gae + self.value_preds[step][thread]
-                else:
-                    self.returns[-1][thread] = next_value[thread]
-                    for step in reversed(range(totle_step+1)):
-                        if self._use_popart or self._use_valuenorm:
-                            self.returns[step][thread] = (self.returns[step + 1][thread] * self.gamma * self.masks[step + 1][thread]
-                                                          + self.rewards[step][thread]) * self.bad_masks[step + 1][thread] \
-                                                         + (1 - self.bad_masks[step + 1][thread]) \
-                                                         * value_normalizer.denormalize(self.value_preds[step][thread])
-                        else:
-                            self.returns[step][thread] = (self.returns[step + 1][thread] * self.gamma * self.masks[step + 1][thread] + self.rewards[
-                                step][thread]) * self.bad_masks[step + 1][thread] \
-                                                 + (1 - self.bad_masks[step + 1][thread]) * self.value_preds[step][thread]
+        if self._use_proper_time_limits:
+            if self._use_gae:
+                self.value_preds[-1] = next_value
+                gae = 0
+                for step in reversed(range(self.rewards.shape[0])):
+                    if self._use_popart or self._use_valuenorm:
+                        # step + 1
+                        delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
+                            self.value_preds[step + 1]) * self.masks[step + 1] \
+                                - value_normalizer.denormalize(self.value_preds[step])
+                        gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1]
+                        gae = gae * self.bad_masks[step + 1]
+                        self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
+                    else:
+                        delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - \
+                                self.value_preds[step]
+                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
+                        gae = gae * self.bad_masks[step + 1]
+                        self.returns[step] = gae + self.value_preds[step]
             else:
-                if self._use_gae:
-                    self.value_preds[-1][thread] = next_value[thread]
-                    gae = 0
+                self.returns[-1] = next_value
+                for step in reversed(range(self.rewards.shape[0])):
+                    if self._use_popart or self._use_valuenorm:
+                        self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
+                            step]) * self.bad_masks[step + 1] \
+                                             + (1 - self.bad_masks[step + 1]) * value_normalizer.denormalize(
+                            self.value_preds[step])
+                    else:
+                        self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
+                            step]) * self.bad_masks[step + 1] \
+                                             + (1 - self.bad_masks[step + 1]) * self.value_preds[step]
+        else:
+            if self._use_gae:
+                self.value_preds[-1] = next_value
+                gae = 0
+                for step in reversed(range(self.rewards.shape[0])):
+                    if self._use_popart or self._use_valuenorm:
+                        delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
+                            self.value_preds[step + 1]) * self.masks[step + 1] \
+                                - value_normalizer.denormalize(self.value_preds[step])
+                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
 
-                    # 将最终奖励赋值给死亡的智能体
-                    for agent_id, dead_step in self.step_done_agent[thread].items():
-                        self.rewards[dead_step][thread][agent_id] += self.thread_final_reward[thread]
+                        # here is a patch for mpe, whose last step is timeout instead of terminate
+                        if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
+                            gae = 0
 
-                    for step in reversed(range(totle_step+1)):
-                        if self._use_popart or self._use_valuenorm:
-                            delta = self.rewards[step][thread] + self.gamma * value_normalizer.denormalize(
-                                self.value_preds[step + 1][thread]) * self.masks[step + 1][thread] \
-                                    - value_normalizer.denormalize(self.value_preds[step][thread])
-                            gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1][thread] * gae
+                        self.advantages[step] = gae
+                        self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
+                    else:
+                        delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * \
+                                self.masks[step + 1] - self.value_preds[step]
+                        gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
 
-                            # here is a patch for mpe, whose last step is timeout instead of terminate
-                            if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
-                                gae = 0
+                        # here is a patch for mpe, whose last step is timeout instead of terminate
+                        if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
+                            gae = 0
 
-                            self.advantages[step][thread] = gae
-                            self.returns[step][thread] = gae + value_normalizer.denormalize(self.value_preds[step][thread])
-                        else:
-                            delta = self.rewards[step][thread] + self.gamma * self.value_preds[step + 1][thread] * \
-                                    self.masks[step + 1][thread] - self.value_preds[step][thread]
-                            gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1][thread] * gae
-
-                            # here is a patch for mpe, whose last step is timeout instead of terminate
-                            if self.env_name == "MPE" and step == self.rewards.shape[0] - 1:
-                                gae = 0
-
-                            self.advantages[step][thread] = gae
-                            self.returns[step][thread] = gae + self.value_preds[step][thread]
-                else:
-                    # 将最终奖励赋值给死亡的智能体
-                    for agent_id, dead_step in self.step_done_agent[thread].items():
-                        self.rewards[dead_step][thread][agent_id] += self.thread_final_reward[thread]
-
-                    self.returns[-1][thread] = next_value[thread]
-                    for step in reversed(range(totle_step+1)):
-                        self.returns[step][thread] = self.returns[step + 1][thread] * self.gamma \
-                                                     * self.masks[step + 1][thread] + self.rewards[step][thread]
+                        self.advantages[step] = gae
+                        self.returns[step] = gae + self.value_preds[step]
+            else:
+                self.returns[-1] = next_value
+                for step in reversed(range(self.rewards.shape[0])):
+                    self.returns[step] = self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[step]
 
     def feed_forward_generator_transformer(self, advantages, num_mini_batch=None, mini_batch_size=None):
         """
@@ -295,15 +257,7 @@ class SharedReplayBuffer(object):
         :param mini_batch_size: (int) number of samples in each minibatch.
         """
         episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
-        #batch_size = n_rollout_threads * episode_length
-        totle_step = 0
-        threads_index = [i for i in range(self.n_rollout_threads)]
-        threads_steps = [0] * self.n_rollout_threads
-        for x in threads_index:
-            value = self.threads_done_step[x]
-            totle_step += value
-            threads_steps[i] = value
-        batch_size = totle_step
+        batch_size = n_rollout_threads * episode_length
 
         if mini_batch_size is None:
             assert batch_size >= num_mini_batch, (
@@ -321,79 +275,31 @@ class SharedReplayBuffer(object):
         rows, cols = _shuffle_agent_grid(batch_size, num_agents)
 
         # keep (num_agent, dim)
-        for x in threads_index:
-            if x == 0:
-                share_obs = self.share_obs[:threads_steps[x], x, :, :].reshape(-1, *self.share_obs.shape[2:])
-                obs = self.obs[:threads_steps[x], x, :, :].reshape(-1, *self.obs.shape[2:])
-                rnn_states = self.rnn_states[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states.shape[2:])
-                rnn_states_critic = self.rnn_states_critic[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states_critic.shape[2:])
-                actions = self.actions[:threads_steps[x], x, :, :].reshape(-1, *self.actions.shape[2:])
-                if self.available_actions is not None:
-                    available_actions = self.available_actions[:threads_steps[x], x, :, :].reshape(-1, *self.available_actions.shape[2:])
-                value_preds = self.value_preds[:threads_steps[x], x, :, :].reshape(-1, *self.value_preds.shape[2:])
-                returns = self.returns[:threads_steps[x], x, :, :].reshape(-1, *self.returns.shape[2:])
-                masks = self.masks[:threads_steps[x], x, :, :].reshape(-1, *self.masks.shape[2:])
-                active_masks = self.active_masks[:threads_steps[x], x, :, :].reshape(-1, *self.active_masks.shape[2:])
-                action_log_probs = self.action_log_probs[:threads_steps[x], x, :, :].reshape(-1, *self.action_log_probs.shape[2:])
-                new_advantages = advantages[:threads_steps[x], x, :, :].reshape(-1, *advantages.shape[2:])
-            else:
-                share_obs = np.concatenate((share_obs, self.share_obs[:threads_steps[x], x, :, :].reshape(-1, *self.share_obs.shape[2:])))
-                obs = np.concatenate((obs,self.obs[:threads_steps[x], x, :, :].reshape(-1, *self.obs.shape[2:])))
-                rnn_states =np.concatenate((rnn_states, self.rnn_states[:threads_steps[x], x, :, :].reshape(-1, *self.rnn_states.shape[2:])))
-                rnn_states_critic = np.concatenate((rnn_states_critic,self.rnn_states_critic[:threads_steps[x], x, :, :].reshape(-1,
-                                                                                      *self.rnn_states_critic.shape[2:])))
-                actions = np.concatenate((actions,self.actions[:threads_steps[x], x, :, :].reshape(-1, *self.actions.shape[2:])))
-                if self.available_actions is not None:
-                    available_actions = np.concatenate((available_actions,self.available_actions[:threads_steps[x], x, :, :].reshape(-1,
-                                                                                          *self.available_actions.shape[ 2:])))
-                value_preds = np.concatenate((value_preds,self.value_preds[:threads_steps[x], x, :, :].reshape(-1, *self.value_preds.shape[2:])))
-                returns = np.concatenate((returns,self.returns[:threads_steps[x], x, :, :].reshape(-1, *self.returns.shape[2:])))
-                masks = np.concatenate((masks,self.masks[:threads_steps[x], x, :, :].reshape(-1, *self.masks.shape[2:])))
-                active_masks = np.concatenate((active_masks,self.active_masks[:threads_steps[x], x, :, :].reshape(-1,
-                                                                                                     *self.active_masks.shape[2:])))
-                action_log_probs = np.concatenate((action_log_probs,self.action_log_probs[:threads_steps[x], x, :, :].reshape(-1,
-                                                                                    *self.action_log_probs.shape[2:])))
-                new_advantages = np.concatenate((new_advantages,advantages[:threads_steps[x], x, :, :].reshape(-1, *advantages.shape[2:])))
-
+        share_obs = self.share_obs[:-1].reshape(-1, *self.share_obs.shape[2:])
         share_obs = share_obs[rows, cols]
+        obs = self.obs[:-1].reshape(-1, *self.obs.shape[2:])
         obs = obs[rows, cols]
+        rnn_states = self.rnn_states[:-1].reshape(-1, *self.rnn_states.shape[2:])
         rnn_states = rnn_states[rows, cols]
+        rnn_states_critic = self.rnn_states_critic[:-1].reshape(-1, *self.rnn_states_critic.shape[2:])
         rnn_states_critic = rnn_states_critic[rows, cols]
+        actions = self.actions.reshape(-1, *self.actions.shape[2:])
         actions = actions[rows, cols]
         if self.available_actions is not None:
+            available_actions = self.available_actions[:-1].reshape(-1, *self.available_actions.shape[2:])
             available_actions = available_actions[rows, cols]
+        value_preds = self.value_preds[:-1].reshape(-1, *self.value_preds.shape[2:])
         value_preds = value_preds[rows, cols]
+        returns = self.returns[:-1].reshape(-1, *self.returns.shape[2:])
         returns = returns[rows, cols]
+        masks = self.masks[:-1].reshape(-1, *self.masks.shape[2:])
         masks = masks[rows, cols]
+        active_masks = self.active_masks[:-1].reshape(-1, *self.active_masks.shape[2:])
         active_masks = active_masks[rows, cols]
+        action_log_probs = self.action_log_probs.reshape(-1, *self.action_log_probs.shape[2:])
         action_log_probs = action_log_probs[rows, cols]
-        advantages = new_advantages[rows, cols]
-
-        # share_obs = self.share_obs[:-1].reshape(-1, *self.share_obs.shape[2:])
-        # share_obs = share_obs[rows, cols]
-        # obs = self.obs[:-1].reshape(-1, *self.obs.shape[2:])
-        # obs = obs[rows, cols]
-        # rnn_states = self.rnn_states[:-1].reshape(-1, *self.rnn_states.shape[2:])
-        # rnn_states = rnn_states[rows, cols]
-        # rnn_states_critic = self.rnn_states_critic[:-1].reshape(-1, *self.rnn_states_critic.shape[2:])
-        # rnn_states_critic = rnn_states_critic[rows, cols]
-        # actions = self.actions.reshape(-1, *self.actions.shape[2:])
-        # actions = actions[rows, cols]
-        # if self.available_actions is not None:
-        #     available_actions = self.available_actions[:-1].reshape(-1, *self.available_actions.shape[2:])
-        #     available_actions = available_actions[rows, cols]
-        # value_preds = self.value_preds[:-1].reshape(-1, *self.value_preds.shape[2:])
-        # value_preds = value_preds[rows, cols]
-        # returns = self.returns[:-1].reshape(-1, *self.returns.shape[2:])
-        # returns = returns[rows, cols]
-        # masks = self.masks[:-1].reshape(-1, *self.masks.shape[2:])
-        # masks = masks[rows, cols]
-        # active_masks = self.active_masks[:-1].reshape(-1, *self.active_masks.shape[2:])
-        # active_masks = active_masks[rows, cols]
-        # action_log_probs = self.action_log_probs.reshape(-1, *self.action_log_probs.shape[2:])
-        # action_log_probs = action_log_probs[rows, cols]
-        # advantages = advantages.reshape(-1, *advantages.shape[2:])
-        # advantages = advantages[rows, cols]
+        advantages = advantages.reshape(-1, *advantages.shape[2:])
+        advantages = advantages[rows, cols]
 
         for indices in sampler:
             # [L,T,N,Dim]-->[L*T,N,Dim]-->[index,N,Dim]-->[index*N, Dim]
