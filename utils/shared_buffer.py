@@ -162,6 +162,9 @@ class SharedReplayBuffer(object):
 
         self.step = (self.step + 1) % self.episode_length
 
+        self.step_done_agent = {}
+        self.thread_final_reward = {}
+
     def after_update(self):
         """Copy last timestep data to first index. Called after update to model."""
         self.share_obs[0] = self.share_obs[-1].copy()
@@ -192,6 +195,8 @@ class SharedReplayBuffer(object):
             (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
 
         self.threads_done_step = {}
+        self.step_done_agent = {}
+        self.thread_final_reward = {}
 
     def chooseafter_update(self):
         """Copy last timestep data to first index. This method is used for Hanabi."""
@@ -243,6 +248,11 @@ class SharedReplayBuffer(object):
                 if self._use_gae:
                     self.value_preds[-1][thread] = next_value[thread]
                     gae = 0
+
+                    # 将最终奖励赋值给死亡的智能体
+                    for agent_id, dead_step in self.step_done_agent[thread].items():
+                        self.rewards[dead_step][thread][agent_id] += self.thread_final_reward[thread]
+
                     for step in reversed(range(totle_step+1)):
                         if self._use_popart or self._use_valuenorm:
                             delta = self.rewards[step][thread] + self.gamma * value_normalizer.denormalize(
@@ -268,6 +278,10 @@ class SharedReplayBuffer(object):
                             self.advantages[step][thread] = gae
                             self.returns[step][thread] = gae + self.value_preds[step][thread]
                 else:
+                    # 将最终奖励赋值给死亡的智能体
+                    for agent_id, dead_step in self.step_done_agent[thread].items():
+                        self.rewards[dead_step][thread][agent_id] += self.thread_final_reward[thread]
+
                     self.returns[-1][thread] = next_value[thread]
                     for step in reversed(range(totle_step+1)):
                         self.returns[step][thread] = self.returns[step + 1][thread] * self.gamma \

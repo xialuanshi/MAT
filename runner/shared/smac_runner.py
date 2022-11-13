@@ -121,9 +121,13 @@ class SMACRunner(Runner):
         last_battles_game = np.zeros(self.n_rollout_threads, dtype=np.float32)
         last_battles_won = np.zeros(self.n_rollout_threads, dtype=np.float32)
 
+        agent_nums = 5
         for episode in range(episodes):
             self.warmup()
+            per_thread_agent = {i: 0 for i in range(agent_nums)}
             threads_done_step = {}
+            step_done_agent ={i:per_thread_agent for i in range(self.n_rollout_threads)}
+            thread_final_reward = { i:0 for i in range(self.n_rollout_threads)}
             if self.use_linear_lr_decay:
                 self.mat_trainer.policy.lr_decay(episode, episodes)
 
@@ -165,10 +169,17 @@ class SMACRunner(Runner):
                     for x in is_thread_dones:
                         if x not in threads_done_step:
                             threads_done_step[x] = step
+                            # 正的最大值，付的最小值, 也可以环境返回
+                            thread_final_reward[x] = max(rewards[x]) if max(rewards[x]) >= 20 else min(rewards[x])
+                for done_thread in range(self.n_rollout_threads):
+                    for done_agent in range(agent_nums):
+                        if dones[done_thread][done_agent]:
+                            if step_done_agent[done_thread][done_agent] != 0:
+                                step_done_agent[done_thread][done_agent] = step
 
                 m_data = obs, share_obs, rewards, dones, infos, available_actions, \
                          m_values, actions, m_action_log_probs, m_rnn_states, m_rnn_states_critic
-                self.mat_insert(m_data, threads_done_step)
+                self.mat_insert(m_data, threads_done_step, step_done_agent, thread_final_reward)
 
                 if self.happo_weight != 0:
                     h_data = obs, share_obs, rewards, dones, infos, available_actions, \
@@ -349,7 +360,7 @@ class SMACRunner(Runner):
 
         return values, actions, action_log_probs, rnn_states, rnn_states_critic, action_logits
 
-    def mat_insert(self, data, threads_done_step):
+    def mat_insert(self, data, threads_done_step, step_done_agent, thread_final_reward):
         obs, share_obs, rewards, dones, infos, available_actions, \
         values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
@@ -376,6 +387,8 @@ class SMACRunner(Runner):
             share_obs = obs
 
         self.mat_buffer.threads_done_step = threads_done_step
+        self.step_done_agent = step_done_agent
+        self.thread_final_reward = thread_final_reward
 
         self.mat_buffer.insert(share_obs, obs, rnn_states, rnn_states_critic,
                                actions, action_log_probs, values, rewards, masks, bad_masks, active_masks,
