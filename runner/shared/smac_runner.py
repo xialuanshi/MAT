@@ -122,9 +122,10 @@ class SMACRunner(Runner):
         last_battles_won = np.zeros(self.n_rollout_threads, dtype=np.float32)
 
         agent_nums = 5
+        max_steps = self.episode_length + 100
         for episode in range(episodes):
             self.warmup()
-            per_thread_agent = {i: 0 for i in range(agent_nums)}
+            per_thread_agent = {i: max_steps for i in range(agent_nums)}
             threads_done_step = {}
             step_done_agent ={i:per_thread_agent for i in range(self.n_rollout_threads)}
             thread_final_reward = { i:0 for i in range(self.n_rollout_threads)}
@@ -174,7 +175,7 @@ class SMACRunner(Runner):
                 for done_thread in range(self.n_rollout_threads):
                     for done_agent in range(agent_nums):
                         if dones[done_thread][done_agent]:
-                            if step_done_agent[done_thread][done_agent] != 0:
+                            if step_done_agent[done_thread][done_agent] >= self.episode_length:
                                 step_done_agent[done_thread][done_agent] = step
 
                 m_data = obs, share_obs, rewards, dones, infos, available_actions, \
