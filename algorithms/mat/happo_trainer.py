@@ -171,11 +171,11 @@ class HAPPO:
 
         :return train_info: (dict) contains information regarding training update (e.g. loss, grad norms, etc).
         """
-        if self._use_popart:
-            advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.value_preds[:-1])
-        else:
-            advantages = buffer.returns[:-1] - buffer.value_preds[:-1]
-
+        # if self._use_popart:
+        #     advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.value_preds[:-1])
+        # else:
+        #     advantages = buffer.returns[:-1] - buffer.value_preds[:-1]
+        advantages = buffer.advantages
         advantages_copy = advantages.copy()
         advantages_copy[buffer.active_masks[:-1] == 0.0] = np.nan
         mean_advantages = np.nanmean(advantages_copy)

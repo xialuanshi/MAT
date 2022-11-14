@@ -41,7 +41,7 @@ class SeparatedReplayBuffer(object):
 
         self.value_preds = np.zeros((self.episode_length + 1, self.n_rollout_threads, 1), dtype=np.float32)
         self.returns = np.zeros((self.episode_length + 1, self.n_rollout_threads, 1), dtype=np.float32)
-        
+        self.advantages = np.zeros((self.episode_length, self.n_rollout_threads, 1), dtype=np.float32)
         if act_space.__class__.__name__ == 'Discrete':
             self.available_actions = np.ones((self.episode_length + 1, self.n_rollout_threads, act_space.n), dtype=np.float32)
         else:
@@ -158,10 +158,12 @@ class SeparatedReplayBuffer(object):
                     if self._use_popart or self._use_valuenorm:
                         delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(self.value_preds[step + 1]) * self.masks[step + 1] - value_normalizer.denormalize(self.value_preds[step])
                         gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
+                        self.advantages[step] = gae
                         self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
                     else:
                         delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - self.value_preds[step]
                         gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
+                        self.advantages[step] = gae
                         self.returns[step] = gae + self.value_preds[step]
             else:
                 self.returns[-1] = next_value
